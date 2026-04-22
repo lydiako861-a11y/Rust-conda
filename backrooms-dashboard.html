@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backrooms Incus Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { background: #0a0e1a; color: #c9d1d9; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(8px); border: 1px solid rgba(59,130,246,0.3); border-radius: 16px; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .status-pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body class="p-6">
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-8">
+            <div>
+                <h1 class="text-3xl font-black flex items-center gap-2"><i data-lucide="box" class="w-8 h-8 text-purple-400"></i> Backrooms <span class="text-purple-400">Incus</span></h1>
+                <p class="text-gray-500 text-sm">Split container orchestration – Agent Hub + Compute Node</p>
+            </div>
+            <button onclick="refreshAll()" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-lg text-sm font-semibold transition">⟳ Refresh</button>
+        </div>
+
+        <!-- Container Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <!-- Agent Hub Card -->
+            <div class="glass p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="cpu" class="text-blue-400"></i>
+                        <h2 class="text-xl font-bold">Agent Hub</h2>
+                        <span id="agent-status" class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">Loading...</span>
+                    </div>
+                    <span class="mono text-xs text-gray-500" id="agent-ip">-</span>
+                </div>
+                <div class="space-y-3">
+                    <div><div class="text-gray-400 text-xs">CPU</div><div class="w-full bg-black/40 rounded-full h-2"><div id="agent-cpu-bar" class="bg-blue-500 h-2 rounded-full" style="width:0%"></div></div></div>
+                    <div><div class="text-gray-400 text-xs">Memory</div><div class="w-full bg-black/40 rounded-full h-2"><div id="agent-mem-bar" class="bg-green-500 h-2 rounded-full" style="width:0%"></div></div></div>
+                    <div><div class="text-gray-400 text-xs">Disk</div><div class="w-full bg-black/40 rounded-full h-2"><div id="agent-disk-bar" class="bg-yellow-500 h-2 rounded-full" style="width:0%"></div></div></div>
+                </div>
+            </div>
+
+            <!-- Compute Node Card -->
+            <div class="glass p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="server" class="text-purple-400"></i>
+                        <h2 class="text-xl font-bold">Compute Node</h2>
+                        <span id="compute-status" class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">Loading...</span>
+                    </div>
+                    <span class="mono text-xs text-gray-500" id="compute-ip">-</span>
+                </div>
+                <div class="space-y-3">
+                    <div><div class="text-gray-400 text-xs">CPU</div><div class="w-full bg-black/40 rounded-full h-2"><div id="compute-cpu-bar" class="bg-blue-500 h-2 rounded-full" style="width:0%"></div></div></div>
+                    <div><div class="text-gray-400 text-xs">Memory</div><div class="w-full bg-black/40 rounded-full h-2"><div id="compute-mem-bar" class="bg-green-500 h-2 rounded-full" style="width:0%"></div></div></div>
+                    <div><div class="text-gray-400 text-xs">Disk</div><div class="w-full bg-black/40 rounded-full h-2"><div id="compute-disk-bar" class="bg-yellow-500 h-2 rounded-full" style="width:0%"></div></div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Command Runner (Agent Hub API) -->
+        <div class="glass p-5 mb-8">
+            <h3 class="font-bold mb-3 flex items-center gap-2"><i data-lucide="terminal"></i> Execute Command on Agent Hub</h3>
+            <div class="flex gap-3">
+                <input type="text" id="command-input" placeholder="e.g., ls -la /shared" class="flex-1 bg-black/50 border border-gray-700 rounded-lg px-4 py-2 font-mono text-sm">
+                <button onclick="runCommand()" class="bg-purple-600 px-6 py-2 rounded-lg font-semibold hover:bg-purple-500 transition">Run</button>
+            </div>
+            <pre id="command-output" class="mt-4 bg-black/70 p-3 rounded-lg text-xs font-mono text-green-400 h-40 overflow-auto"></pre>
+        </div>
+
+        <!-- Logs -->
+        <div class="glass p-5">
+            <h3 class="font-bold mb-2 flex items-center gap-2"><i data-lucide="activity"></i> Event Log</h3>
+            <div id="log-container" class="h-48 overflow-y-auto bg-black/40 rounded-lg p-3 font-mono text-xs">
+                <div class="text-gray-600">[System] Dashboard ready</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        // Configuration – update these IPs after running the setup script
+        let AGENT_API = "http://10.0.100.2:5000";   // Agent Hub IP from incus list
+        let COMPUTE_IP = "10.0.100.3";              // Compute Node IP
+
+        async function fetchContainerStats(name) {
+            // Incus API (local) requires authentication; here we use incus command via proxy.
+            // For simplicity, we rely on the Agent Hub to report both.
+            try {
+                const res = await fetch(`${AGENT_API}/status`);
+                if (res.ok) return await res.json();
+            } catch(e) { return null; }
+        }
+
+        async function refreshAll() {
+            addLog("Fetching latest stats...");
+            // Update Agent Hub status via its API
+            try {
+                const agentRes = await fetch(`${AGENT_API}/status`);
+                if (agentRes.ok) {
+                    const data = await agentRes.json();
+                    document.getElementById('agent-status').innerText = "Online";
+                    document.getElementById('agent-status').className = "text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400";
+                    document.getElementById('agent-ip').innerText = AGENT_API.split('//')[1].split(':')[0];
+                    // Simulate resource usage (real Incus API would give these)
+                    document.getElementById('agent-cpu-bar').style.width = Math.floor(Math.random() * 40 + 10) + "%";
+                    document.getElementById('agent-mem-bar').style.width = Math.floor(Math.random() * 30 + 20) + "%";
+                    document.getElementById('agent-disk-bar').style.width = Math.floor(Math.random() * 50 + 10) + "%";
+                } else {
+                    throw new Error();
+                }
+            } catch(e) {
+                document.getElementById('agent-status').innerText = "Offline";
+                document.getElementById('agent-status').className = "text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400";
+            }
+
+            // Compute Node status (simulate via ping or Incus API; here we just show online)
+            try {
+                // Attempt to ping compute node via Agent Hub
+                const pingRes = await fetch(`${AGENT_API}/run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cmd: `ping -c 1 ${COMPUTE_IP}` })
+                });
+                const pingData = await pingRes.json();
+                if (pingData.stdout.includes("1 received")) {
+                    document.getElementById('compute-status').innerText = "Online";
+                    document.getElementById('compute-status').className = "text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400";
+                    document.getElementById('compute-ip').innerText = COMPUTE_IP;
+                    document.getElementById('compute-cpu-bar').style.width = Math.floor(Math.random() * 60 + 20) + "%";
+                    document.getElementById('compute-mem-bar').style.width = Math.floor(Math.random() * 50 + 30) + "%";
+                    document.getElementById('compute-disk-bar').style.width = Math.floor(Math.random() * 70 + 10) + "%";
+                } else {
+                    throw new Error();
+                }
+            } catch(e) {
+                document.getElementById('compute-status').innerText = "Offline";
+                document.getElementById('compute-status').className = "text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400";
+            }
+            addLog("Stats refreshed.");
+        }
+
+        async function runCommand() {
+            const cmd = document.getElementById('command-input').value;
+            if (!cmd) return;
+            addLog(`Executing: ${cmd}`);
+            const outputDiv = document.getElementById('command-output');
+            outputDiv.innerText = "Running...";
+            try {
+                const res = await fetch(`${AGENT_API}/run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cmd: cmd })
+                });
+                const data = await res.json();
+                outputDiv.innerText = data.stdout + (data.stderr ? "\n\nSTDERR:\n" + data.stderr : "");
+                addLog("Command completed.");
+            } catch(e) {
+                outputDiv.innerText = "Error: " + e.message;
+                addLog("Command failed.");
+            }
+        }
+
+        function addLog(msg) {
+            const logDiv = document.getElementById('log-container');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'text-gray-400 text-[11px]';
+            entry.innerText = `[${time}] ${msg}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        setInterval(refreshAll, 5000);
+        refreshAll();
+    </script>
+</body>
+</html>
